@@ -1,6 +1,6 @@
 """
-FastAPI application for data extraction from strings.
-This API provides endpoints to extract specific data from text strings and return structured JSON responses.
+FastAPI application for Google Sheets ID extraction.
+This API provides endpoints to extract Google Sheets document IDs and sheet IDs from URLs.
 """
 
 from fastapi import FastAPI, HTTPException, Depends, status, Request
@@ -8,22 +8,21 @@ from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import re
 import os
 from datetime import datetime
 from security import (
     security, 
     sanitize_input_text, 
-    validate_extraction_type, 
     create_secure_response_headers,
     check_rate_limit
 )
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Data Extraction API",
-    description="A production-ready API for extracting structured data from text strings",
+    title="Google Sheets ID Extraction API",
+    description="A production-ready API for extracting Google Sheets document IDs and sheet IDs from URLs",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -42,34 +41,24 @@ app.add_middleware(
 API_TOKEN = os.getenv("API_TOKEN", "your-secret-token-here")
 
 # Pydantic models
-class ExtractionRequest(BaseModel):
-    """Request model for data extraction."""
-    text: str = Field(..., description="The text string to extract data from", min_length=1, max_length=1048576)
-    extraction_type: str = Field(
-        default="email_phone", 
-        description="Type of extraction to perform",
-        pattern="^(email_phone|dates|numbers|urls|all)$"
-    )
+class SheetsExtractionRequest(BaseModel):
+    """Request model for Google Sheets ID extraction."""
+    url: str = Field(..., description="The Google Sheets URL or document ID to extract from", min_length=1, max_length=2048)
     
-    @field_validator('text')
+    @field_validator('url')
     @classmethod
-    def validate_text(cls, v):
-        """Validate and sanitize input text."""
+    def validate_url(cls, v):
+        """Validate and sanitize input URL."""
         return sanitize_input_text(v)
-    
-    @field_validator('extraction_type')
-    @classmethod
-    def validate_extraction_type(cls, v):
-        """Validate extraction type."""
-        return validate_extraction_type(v)
 
-class ExtractionResponse(BaseModel):
-    """Response model for extracted data."""
+class SheetsExtractionResponse(BaseModel):
+    """Response model for extracted Google Sheets IDs."""
     success: bool = Field(..., description="Whether the extraction was successful")
-    extracted_data: Dict[str, Any] = Field(..., description="The extracted data organized by type")
-    original_text: str = Field(..., description="The original input text")
-    extraction_type: str = Field(..., description="The type of extraction performed")
+    document_id: Optional[str] = Field(None, description="The Google Sheets document ID")
+    sheet_ids: List[str] = Field(default_factory=list, description="List of individual sheet IDs found in the URL")
+    original_url: str = Field(..., description="The original input URL")
     timestamp: str = Field(..., description="ISO timestamp of when extraction was performed")
+    url_type: str = Field(..., description="Type of URL processed (full_url, document_id, or invalid)")
 
 class HealthResponse(BaseModel):
     """Response model for health check."""
@@ -88,77 +77,114 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
         )
     return credentials.credentials
 
-# Data extraction functions
-def extract_emails(text: str) -> list:
-    """Extract email addresses from text."""
-    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-    return re.findall(email_pattern, text)
-
-def extract_phone_numbers(text: str) -> list:
-    """Extract phone numbers from text."""
-    # Pattern for various phone number formats
-    phone_patterns = [
-        r'\b\d{3}-\d{3}-\d{4}\b',  # 123-456-7890
-        r'\(\d{3}\)\s*\d{3}-\d{4}',  # (123) 456-7890
-        r'\b\d{3}\.\d{3}\.\d{4}\b',  # 123.456.7890
-        r'\b\d{10}\b',  # 1234567890
-        r'\+\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{4}',  # +1 123 456 7890
-        r'\b\d{3}\s+\d{3}\s+\d{4}\b',  # 123 456 7890
+# Google Sheets ID extraction functions
+def extract_document_id(url: str) -> Optional[str]:
+    """
+    Extract the Google Sheets document ID from a URL or return the ID if it's already clean.
+    
+    Args:
+        url: Google Sheets URL or document ID
+        
+    Returns:
+        Document ID if found, None otherwise
+    """
+    # If it's already a clean document ID (44 characters, alphanumeric + underscores/hyphens)
+    if re.match(r'^[a-zA-Z0-9_-]{44}$', url.strip()):
+        return url.strip()
+    
+    # Extract from full Google Sheets URL
+    patterns = [
+        r'/spreadsheets/d/([a-zA-Z0-9_-]{44})',  # Standard pattern
+        r'spreadsheets/d/([a-zA-Z0-9_-]{44})',   # Without leading slash
+        r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]{44})',  # Full domain pattern
     ]
     
-    phone_numbers = []
-    for pattern in phone_patterns:
-        matches = re.findall(pattern, text)
-        phone_numbers.extend(matches)
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
     
-    return list(set(phone_numbers))  # Remove duplicates
+    return None
 
-def extract_dates(text: str) -> list:
-    """Extract dates from text."""
-    date_patterns = [
-        r'\b\d{1,2}/\d{1,2}/\d{4}\b',  # MM/DD/YYYY or M/D/YYYY
-        r'\b\d{1,2}-\d{1,2}-\d{4}\b',  # MM-DD-YYYY or M-D-YYYY
-        r'\b\d{4}-\d{1,2}-\d{1,2}\b',  # YYYY-MM-DD or YYYY-M-D
-        r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b',  # Month DD, YYYY
+def extract_sheet_ids(url: str) -> List[str]:
+    """
+    Extract individual sheet IDs (gid parameters) from a Google Sheets URL.
+    
+    Args:
+        url: Google Sheets URL
+        
+    Returns:
+        List of sheet IDs found in the URL
+    """
+    sheet_ids = []
+    
+    # Pattern to match gid parameters
+    gid_patterns = [
+        r'gid=(\d+)',  # Standard gid parameter
+        r'#gid=(\d+)',  # Fragment gid parameter
     ]
     
-    dates = []
-    for pattern in date_patterns:
-        dates.extend(re.findall(pattern, text, re.IGNORECASE))
+    for pattern in gid_patterns:
+        matches = re.findall(pattern, url)
+        sheet_ids.extend(matches)
     
-    return list(set(dates))
-
-def extract_numbers(text: str) -> list:
-    """Extract numbers from text."""
-    number_pattern = r'\b\d+(?:\.\d+)?\b'
-    return re.findall(number_pattern, text)
-
-def extract_urls(text: str) -> list:
-    """Extract URLs from text."""
-    url_pattern = r'https?://(?:[-\w.])+(?:[:\d]+)?(?:/(?:[\w/_.])*(?:\?(?:[\w&=%.])*)?(?:#(?:[\w.])*)?)?'
-    return re.findall(url_pattern, text)
-
-def perform_extraction(text: str, extraction_type: str) -> Dict[str, Any]:
-    """Perform the specified type of data extraction."""
-    extracted_data = {}
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_sheet_ids = []
+    for sheet_id in sheet_ids:
+        if sheet_id not in seen:
+            seen.add(sheet_id)
+            unique_sheet_ids.append(sheet_id)
     
-    if extraction_type == "email_phone":
-        extracted_data["emails"] = extract_emails(text)
-        extracted_data["phone_numbers"] = extract_phone_numbers(text)
-    elif extraction_type == "dates":
-        extracted_data["dates"] = extract_dates(text)
-    elif extraction_type == "numbers":
-        extracted_data["numbers"] = extract_numbers(text)
-    elif extraction_type == "urls":
-        extracted_data["urls"] = extract_urls(text)
-    elif extraction_type == "all":
-        extracted_data["emails"] = extract_emails(text)
-        extracted_data["phone_numbers"] = extract_phone_numbers(text)
-        extracted_data["dates"] = extract_dates(text)
-        extracted_data["numbers"] = extract_numbers(text)
-        extracted_data["urls"] = extract_urls(text)
+    return unique_sheet_ids
+
+def determine_url_type(url: str, document_id: Optional[str], sheet_ids: List[str]) -> str:
+    """
+    Determine the type of URL that was processed.
     
-    return extracted_data
+    Args:
+        url: Original URL input
+        document_id: Extracted document ID
+        sheet_ids: Extracted sheet IDs
+        
+    Returns:
+        URL type classification
+    """
+    if not document_id:
+        return "invalid"
+    
+    # Check if it's already a clean document ID
+    if re.match(r'^[a-zA-Z0-9_-]{44}$', url.strip()):
+        return "document_id"
+    
+    # Check if it contains Google Sheets URL patterns
+    if 'docs.google.com/spreadsheets' in url or 'spreadsheets/d/' in url:
+        if sheet_ids:
+            return "full_url_with_sheets"
+        else:
+            return "full_url"
+    
+    return "partial_url"
+
+def extract_sheets_info(url: str) -> Dict[str, Any]:
+    """
+    Extract all Google Sheets information from a URL or document ID.
+    
+    Args:
+        url: Google Sheets URL or document ID
+        
+    Returns:
+        Dictionary containing extracted information
+    """
+    document_id = extract_document_id(url)
+    sheet_ids = extract_sheet_ids(url)
+    url_type = determine_url_type(url, document_id, sheet_ids)
+    
+    return {
+        "document_id": document_id,
+        "sheet_ids": sheet_ids,
+        "url_type": url_type
+    }
 
 # API Routes
 @app.middleware("http")
@@ -191,30 +217,35 @@ async def health_check():
         version="1.0.0"
     )
 
-@app.post("/extract", response_model=ExtractionResponse)
-async def extract_data(
-    request: ExtractionRequest,
+@app.post("/extract", response_model=SheetsExtractionResponse)
+async def extract_sheets_ids(
+    request: SheetsExtractionRequest,
     http_request: Request,
     token: str = Depends(verify_token)
 ):
     """
-    Extract structured data from the provided text string.
+    Extract Google Sheets document ID and sheet IDs from a URL.
     
-    - **text**: The input text to extract data from
-    - **extraction_type**: Type of extraction (email_phone, dates, numbers, urls, all)
+    - **url**: The Google Sheets URL or document ID to extract from
     
-    Returns structured JSON with extracted data organized by type.
+    Returns structured JSON with extracted Google Sheets information.
+    
+    **Supported URL formats:**
+    - Full URL: `https://docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit?gid=1058109381#gid=1058109381`
+    - Document ID only: `12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk`
+    - Partial URL: `spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk`
     """
     try:
         # Rate limiting is handled in the security module via the SecureHTTPBearer
         
-        extracted_data = perform_extraction(request.text, request.extraction_type)
+        extracted_info = extract_sheets_info(request.url)
         
-        return ExtractionResponse(
-            success=True,
-            extracted_data=extracted_data,
-            original_text=request.text,
-            extraction_type=request.extraction_type,
+        return SheetsExtractionResponse(
+            success=extracted_info["document_id"] is not None,
+            document_id=extracted_info["document_id"],
+            sheet_ids=extracted_info["sheet_ids"],
+            original_url=request.url,
+            url_type=extracted_info["url_type"],
             timestamp=datetime.utcnow().isoformat()
         )
     

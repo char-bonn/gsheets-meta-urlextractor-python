@@ -187,26 +187,27 @@ class TestSecurityIntegration:
         client = TestClient(app)
         headers = {"Authorization": "Bearer your-secret-token-here"}
         
-        # Attempt XSS injection
-        malicious_text = "Contact <script>alert('xss')</script> test@example.com"
-        payload = {"text": malicious_text, "extraction_type": "email_phone"}
+        # Attempt XSS injection in URL
+        malicious_url = "https://docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit?<script>alert('xss')</script>"
+        payload = {"url": malicious_url}
         
         response = client.post("/extract", json=payload, headers=headers)
         assert response.status_code == 200
         
         data = response.json()
-        # The original text should be sanitized
-        assert "<script>" not in data["original_text"]
-        assert "test@example.com" in data["extracted_data"]["emails"]
+        # The original URL should be sanitized
+        assert "<script>" not in data["original_url"]
+        # Should still extract the document ID
+        assert data["document_id"] == "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
     
     def test_oversized_input_rejection(self):
         """Test that oversized input is rejected."""
         client = TestClient(app)
         headers = {"Authorization": "Bearer your-secret-token-here"}
         
-        # Create a very large text input
-        large_text = "a" * (1048576 + 1)  # Exceed max size
-        payload = {"text": large_text, "extraction_type": "email_phone"}
+        # Create a very large URL input
+        large_url = "https://docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit?" + "a" * (2048 + 1)  # Exceed max size
+        payload = {"url": large_url}
         
         response = client.post("/extract", json=payload, headers=headers)
         assert response.status_code == 422  # Validation error
