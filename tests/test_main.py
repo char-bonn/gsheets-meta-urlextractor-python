@@ -66,33 +66,47 @@ class TestAuthentication:
         response = client.post("/extract", json=payload)
         assert response.status_code == 403
 
+
 class TestExtractionFunctions:
-    """Test individual extraction functions."""
+    """Test the core extraction functions."""
     
     def test_extract_document_id_from_full_url(self):
-        """Test document ID extraction from full Google Sheets URL."""
-        url = "https://docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit?gid=1058109381#gid=1058109381"
-        doc_id = extract_document_id(url)
-        assert doc_id == "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
+        """Test extracting document ID from full Google Sheets URL."""
+        url = "https://docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit"
+        result = extract_document_id(url)
+        assert result == "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
     
     def test_extract_document_id_from_clean_id(self):
-        """Test document ID extraction from clean document ID."""
-        doc_id_input = "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
-        doc_id = extract_document_id(doc_id_input)
-        assert doc_id == "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
+        """Test that clean document IDs are returned as-is."""
+        doc_id = "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
+        result = extract_document_id(doc_id)
+        assert result == doc_id
+    
+    def test_extract_document_id_from_shorter_id(self):
+        """Test that shorter document IDs (42 chars) are handled correctly."""
+        doc_id = "1234567890abcdefghijklmnopqrstuvwxyzABCDEF"  # 42 chars
+        result = extract_document_id(doc_id)
+        assert result == doc_id
     
     def test_extract_document_id_from_partial_url(self):
-        """Test document ID extraction from partial URL."""
-        url = "spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit"
-        doc_id = extract_document_id(url)
-        assert doc_id == "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
+        """Test extracting document ID from partial URL."""
+        url = "docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit"
+        result = extract_document_id(url)
+        assert result == "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk"
     
     def test_extract_document_id_invalid_url(self):
-        """Test document ID extraction from invalid URL."""
-        url = "https://example.com/not-a-sheets-url"
-        doc_id = extract_document_id(url)
-        assert doc_id is None
-    
+        """Test that invalid URLs return None."""
+        invalid_urls = [
+            "https://example.com/not-a-sheets-url",
+            "invalid-id-too-short",
+            "this-is-way-too-long-to-be-a-valid-google-sheets-document-id-and-should-be-rejected",
+            "",
+            None
+        ]
+        for url in invalid_urls:
+            result = extract_document_id(url)
+            assert result is None
+
     def test_extract_sheet_ids_single_gid(self):
         """Test sheet ID extraction with single gid parameter."""
         url = "https://docs.google.com/spreadsheets/d/12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0Xdk/edit?gid=1058109381"
@@ -253,12 +267,12 @@ class TestEdgeCases:
     def test_malformed_document_id(self, client, auth_headers):
         """Test extraction with malformed document ID."""
         payload = {
-            "url": "12itafHpvKAvPWUWl9XWtNJfG9T4kMw0sxqz9MFv0X"  # Too short
+            "url": "12itafHpvKAvPWUWl9XWtNJ"  # 23 chars - too short for new validation (min 25)
         }
         response = client.post("/extract", json=payload, headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
-        assert data["success"] is False
+        assert data["success"] is False  # Should fail because it's less than 25 chars minimum
         assert data["document_id"] is None
     
     def test_unicode_in_url(self, client, auth_headers):

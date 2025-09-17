@@ -88,22 +88,26 @@ def extract_document_id(url: str) -> Optional[str]:
     Returns:
         Document ID if found, None otherwise
     """
-    # If it's already a clean document ID (44 characters, alphanumeric + underscores/hyphens)
-    if re.match(r'^[a-zA-Z0-9_-]{44}$', url.strip()):
+    if not url or not isinstance(url, str):
+        return None
+    
+    # Step 1: Try to extract the ID from a URL pattern.
+    # This pattern looks for a string of valid characters that comes after "/spreadsheets/d/".
+    url_pattern = r'spreadsheets/d/([a-zA-Z0-9-_]+)'
+    match = re.search(url_pattern, url)
+    
+    if match:
+        # The ID is in the first capturing group.
+        return match.group(1)
+
+    # Step 2: If no URL pattern matches, assume the input is the ID itself.
+    # Validate it to make sure it looks like a plausible ID.
+    # This pattern checks for valid characters and a reasonable length (25-50 chars).
+    id_pattern = r'^[a-zA-Z0-9-_]{25,50}$'
+    if re.match(id_pattern, url.strip()):
         return url.strip()
-    
-    # Extract from full Google Sheets URL
-    patterns = [
-        r'/spreadsheets/d/([a-zA-Z0-9_-]{44})',  # Standard pattern
-        r'spreadsheets/d/([a-zA-Z0-9_-]{44})',   # Without leading slash
-        r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]{44})',  # Full domain pattern
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    
+
+    # If neither pattern matches, return None.
     return None
 
 def extract_sheet_ids(url: str) -> List[str]:
@@ -153,8 +157,8 @@ def determine_url_type(url: str, document_id: Optional[str], sheet_ids: List[str
     if not document_id:
         return "invalid"
     
-    # Check if it's already a clean document ID
-    if re.match(r'^[a-zA-Z0-9_-]{44}$', url.strip()):
+    # Check if it's already a clean document ID (25-50 characters, valid pattern)
+    if re.match(r'^[a-zA-Z0-9-_]{25,50}$', url.strip()):
         return "document_id"
     
     # Check if it contains Google Sheets URL patterns
